@@ -18,6 +18,7 @@ var store        = require('../common/store');
 var config       = require('../config');
 var _            = require('lodash');
 var cache        = require('../common/cache');
+var logger = require('../common/logger')
 
 /**
  * Topic page
@@ -35,16 +36,20 @@ exports.index = function (req, res, next) {
   }
 
   var topic_id = req.params.tid;
+  var currentUser = req.session.user;
+
   if (topic_id.length !== 24) {
     return res.render404('此话题不存在或已被删除。');
   }
-  var events = ['topic', 'other_topics', 'no_reply_topics'];
-  var ep = EventProxy.create(events, function (topic, other_topics, no_reply_topics) {
+  var events = ['topic', 'other_topics', 'no_reply_topics', 'is_collect'];
+  var ep = EventProxy.create(events,
+    function (topic, other_topics, no_reply_topics, is_collect) {
     res.render('topic/index', {
       topic: topic,
       author_other_topics: other_topics,
       no_reply_topics: no_reply_topics,
-      is_uped: isUped
+      is_uped: isUped,
+      is_collect: is_collect,
     });
   });
 
@@ -52,7 +57,7 @@ exports.index = function (req, res, next) {
 
   Topic.getFullTopic(topic_id, ep.done(function (message, topic, author, replies) {
     if (message) {
-      ep.unbind();
+      logger.error('getFullTopic error topic_id: ' + topic_id)
       return res.renderError(message);
     }
 
@@ -98,6 +103,12 @@ exports.index = function (req, res, next) {
       }
     }));
   }));
+
+  if (!currentUser) {
+    ep.emit('is_collect', null);
+  } else {
+    TopicCollect.getTopicCollect(currentUser._id, topic_id, ep.done('is_collect'))
+  }
 };
 
 exports.create = function (req, res, next) {
@@ -109,9 +120,7 @@ exports.create = function (req, res, next) {
 
 exports.put = function (req, res, next) {
   var title   = validator.trim(req.body.title);
-  title       = validator.escape(title);
   var tab     = validator.trim(req.body.tab);
-  tab         = validator.escape(tab);
   var content = validator.trim(req.body.t_content);
 
   // 得到所有的 tab, e.g. ['ask', 'share', ..]
@@ -204,9 +213,7 @@ exports.update = function (req, res, next) {
 
     if (topic.author_id.equals(req.session.user._id) || req.session.user.is_admin) {
       title   = validator.trim(title);
-      title   = validator.escape(title);
       tab     = validator.trim(tab);
-      tab     = validator.escape(tab);
       content = validator.trim(content);
 
       // 验证
@@ -259,7 +266,7 @@ exports.delete = function (req, res, next) {
 
   var topic_id = req.params.tid;
 
-  Topic.getTopic(topic_id, function (err, topic) {
+  Topic.getFullTopic(topic_id, function (err, err_msg, topic, author, replies) {
     if (err) {
       return res.send({ success: false, message: err.message });
     }
@@ -271,6 +278,10 @@ exports.delete = function (req, res, next) {
       res.status(422);
       return res.send({ success: false, message: '此话题不存在或已被删除。' });
     }
+    author.score -= 5;
+    author.topic_count -= 1;
+    author.save();
+
     topic.deleted = true;
     topic.save(function (err) {
       if (err) {
@@ -359,6 +370,7 @@ exports.lock = function (req, res, next) {
 // 收藏主题
 exports.collect = function (req, res, next) {
   var topic_id = req.body.topic_id;
+
   Topic.getTopic(topic_id, function (err, topic) {
     if (err) {
       return next(err);
@@ -372,7 +384,7 @@ exports.collect = function (req, res, next) {
         return next(err);
       }
       if (doc) {
-        res.json({status: 'success'});
+        res.json({status: 'failed'});
         return;
       }
 
@@ -406,39 +418,56 @@ exports.de_collect = function (req, res, next) {
     if (!topic) {
       res.json({status: 'failed'});
     }
-    TopicCollect.remove(req.session.user._id, topic._id, function (err) {
+    TopicCollect.remove(req.session.user._id, topic._id, function (err, removeResult) {
       if (err) {
         return next(err);
       }
+      if (removeResult.result.n == 0) {
+        return res.json({status: 'failed'})
+      }
+
+      User.getUserById(req.session.user._id, function (err, user) {
+        if (err) {
+          return next(err);
+        }
+        user.collect_topic_count -= 1;
+        req.session.user = user;
+        user.save();
+      });
+
+      topic.collect_count -= 1;
+      topic.save();
+
       res.json({status: 'success'});
     });
-
-    User.getUserById(req.session.user._id, function (err, user) {
-      if (err) {
-        return next(err);
-      }
-      user.collect_topic_count -= 1;
-      user.save();
-    });
-
-    topic.collect_count -= 1;
-    topic.save();
-
-    req.session.user.collect_topic_count -= 1;
   });
 };
 
 exports.upload = function (req, res, next) {
+  var isFileLimit = false;
   req.busboy.on('file', function (fieldname, file, filename, encoding, mimetype) {
+      file.on('limit', function () {
+        isFileLimit = true;
+
+        res.json({
+          success: false,
+          msg: 'File size too large. Max is ' + config.file_limit
+        })
+      });
+
       store.upload(file, {filename: filename}, function (err, result) {
         if (err) {
           return next(err);
+        }
+        if (isFileLimit) {
+          return;
         }
         res.json({
           success: true,
           url: result.url,
         });
       });
+
     });
 
   req.pipe(req.busboy);

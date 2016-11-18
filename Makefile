@@ -1,5 +1,5 @@
 TESTS = $(shell find test -type f -name "*.test.js")
-TEST_TIMEOUT = 5000
+TEST_TIMEOUT = 10000
 MOCHA_REPORTER = spec
 # NPM_REGISTRY = "--registry=http://registry.npm.taobao.org"
 NPM_REGISTRY = ""
@@ -26,6 +26,14 @@ test: install pretest
 		--timeout $(TEST_TIMEOUT) \
 		$(TESTS)
 
+testfile:
+	@NODE_ENV=test ./node_modules/mocha/bin/mocha \
+		--reporter $(MOCHA_REPORTER) \
+		-r should \
+		-r test/env \
+		--timeout $(TEST_TIMEOUT) \
+		$(FILE)
+
 test-cov cov: install pretest
 	@NODE_ENV=test node \
 		node_modules/.bin/istanbul cover --preserve-comments \
@@ -37,16 +45,17 @@ test-cov cov: install pretest
 		--timeout $(TEST_TIMEOUT) \
 		$(TESTS)
 
+
 build:
-	@./node_modules/loader/bin/build views .
+	@./node_modules/loader-builder/bin/builder views .
 
 run:
 	@node app.js
 
 start: install build
-	@NODE_ENV=production nohup ./node_modules/.bin/pm2 start app.js -i 0 --name "cnode" --max-memory-restart 400M >> cnode.log 2>&1 &
+	@NODE_ENV=production ./node_modules/.bin/pm2 start app.js -i 0 --name "cnode" --max-memory-restart 400M
 
 restart: install build
-	@NODE_ENV=production nohup ./node_modules/.bin/pm2 restart "cnode" >> cnode.log 2>&1 &
+	@NODE_ENV=production ./node_modules/.bin/pm2 restart "cnode"
 
-.PHONY: install test cov test-cov build run start restart
+.PHONY: install test testfile cov test-cov build run start restart
